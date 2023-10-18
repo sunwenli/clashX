@@ -47,60 +47,78 @@
 //
 
 import Cocoa
+import ServiceManagement
 
-public final class LoginServiceKit: NSObject {}
+public enum LoginServiceKit {
+    private static var snapshot: (list: LSSharedFileList, items: [LSSharedFileListItem])? {
+        guard let list = LSSharedFileListCreate(nil, kLSSharedFileListSessionLoginItems.takeRetainedValue(), nil)?.takeRetainedValue() else {
+            return nil
+        }
+        return (list, (LSSharedFileListCopySnapshot(list, nil)?.takeRetainedValue() as? [LSSharedFileListItem]) ?? [])
+    }
 
-public extension LoginServiceKit {
-    static func isExistLoginItems(at path: String = Bundle.main.bundlePath) -> Bool {
-        return (loginItem(at: path) != nil)
+    public static func isExistLoginItems(at path: String = Bundle.main.bundlePath) -> Bool {
+        if #available(macOS 13.0, *) {
+            return SMAppService.mainApp.status == .enabled
+        }
+        return loginItem(at: path) != nil
     }
 
     @discardableResult
-    static func addLoginItems(at path: String = Bundle.main.bundlePath) -> Bool {
-        guard !isExistLoginItems(at: path) else { return false }
-        guard let snapshots = loginItemsListSnapshots() else { return false }
+    public static func addLoginItems(at path: String = Bundle.main.bundlePath) -> Bool {
+        guard isExistLoginItems(at: path) == false else {
+            return false
+        }
 
-        let url = URL(fileURLWithPath: path)
-        LSSharedFileListInsertItemURL(snapshots.fileList, snapshots.items.last, nil, nil, url as CFURL, nil, nil)
-        return true
+        if #available(macOS 13.0, *) {
+            do {
+                try SMAppService.mainApp.register()
+                return true
+            } catch let err {
+                Logger.log("add loginItem error: \(err.localizedDescription)", level: .error)
+                return false
+            }
+        }
+
+        guard let (list, _) = snapshot else {
+            return false
+        }
+        let res = LoginKitWrapper.setLogin(list, path: path)
+        Logger.log("set launch at login success: \(res)")
+        return res
     }
 
     @discardableResult
-    static func removeLoginItems(at path: String = Bundle.main.bundlePath) -> Bool {
-        guard isExistLoginItems(at: path) else { return false }
-        guard let snapshots = loginItemsListSnapshots() else { return false }
-
-        let url = URL(fileURLWithPath: path)
-        for loginItem in snapshots.items {
-            guard let resolvedUrl = LSSharedFileListItemCopyResolvedURL(loginItem, 0, nil) else { continue }
-            let itemUrl = resolvedUrl.takeRetainedValue() as URL
-            guard url.absoluteString == itemUrl.absoluteString else { continue }
-            LSSharedFileListItemRemove(snapshots.fileList, loginItem)
+    public static func removeLoginItems(at path: String = Bundle.main.bundlePath) -> Bool {
+        guard isExistLoginItems(at: path) == true else {
+            return false
         }
-        return true
-    }
-}
 
-private extension LoginServiceKit {
-    static func loginItem(at path: String) -> LSSharedFileListItem? {
-        guard !path.isEmpty else { return nil }
-        guard let snapshots = loginItemsListSnapshots() else { return nil }
-
-        let url = URL(fileURLWithPath: path)
-        for loginItem in snapshots.items {
-            guard let resolvedUrl = LSSharedFileListItemCopyResolvedURL(loginItem, 0, nil) else { continue }
-            let itemUrl = resolvedUrl.takeRetainedValue() as URL
-            guard url.absoluteString == itemUrl.absoluteString else { continue }
-            return loginItem
+        if #available(macOS 13.0, *) {
+            do {
+                try SMAppService.mainApp.unregister()
+                return true
+            } catch let err {
+                Logger.log("remove loginItem error: \(err.localizedDescription)", level: .error)
+                return false
+            }
         }
-        return nil
+        guard let (list, items) = snapshot else {
+            return false
+        }
+        return items.filter({
+            LSSharedFileListItemCopyResolvedURL($0, 0, nil)?.takeRetainedValue() == (URL(fileURLWithPath: path) as CFURL) }
+        ).allSatisfy {
+            LSSharedFileListItemRemove(list, $0) == noErr
+        }
     }
 
-    static func loginItemsListSnapshots() -> (fileList: LSSharedFileList, items: [LSSharedFileListItem])? {
-        guard let sharedFileList = LSSharedFileListCreate(nil, kLSSharedFileListSessionLoginItems.takeRetainedValue(), nil) else { return nil }
-        let fileList = sharedFileList.takeRetainedValue()
-        let loginItemsListSnapshot: NSArray = LSSharedFileListCopySnapshot(fileList, nil).takeRetainedValue()
-        let loginItems = loginItemsListSnapshot as? [LSSharedFileListItem]
-        return (fileList, loginItems ?? [])
+    private static func loginItem(at path: String) -> LSSharedFileListItem? {
+        return snapshot?.items.first { item in
+            guard let url = LSSharedFileListItemCopyResolvedURL(item, 0, nil)?.takeRetainedValue() else {
+                return false
+            }
+            return URL(fileURLWithPath: path).absoluteString == (url as URL).absoluteString
+        }
     }
 }

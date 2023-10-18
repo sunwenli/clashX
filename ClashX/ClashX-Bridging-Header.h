@@ -3,3 +3,6 @@
 //
 #import "goClash.h"
 #import "ProxyConfigRemoteProcessProtocol.h"
+#import "LoginKitWrapper.h"
+#import <sys/proc_info.h>
+#import <libproc.h>
